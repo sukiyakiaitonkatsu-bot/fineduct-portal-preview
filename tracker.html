@@ -1,0 +1,100 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fineduct Order Tracker – KAJO / GTAP</title>
+<style>
+:root{--b:#1d4e89;--bg:#f4f6f9;--ok:#2e8b57;--warn:#e0a100;--bad:#c0392b}
+*{box-sizing:border-box}body{margin:0;font:14px/1.4 system-ui,Segoe UI,Arial;background:var(--bg);color:#222}
+header{background:var(--b);color:#fff;padding:12px 20px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
+header h1{margin:0;font-size:19px}header p{margin:0;font-size:12px;opacity:.85}
+header select{padding:6px;border-radius:5px;border:0;font:inherit}
+main{display:grid;grid-template-columns:380px 1fr;gap:16px;padding:16px;max-width:1500px;margin:auto}
+.card{background:#fff;border-radius:8px;box-shadow:0 1px 3px #0002;padding:14px;margin-bottom:16px}
+h2{font-size:16px;margin:0 0 10px;color:var(--b)}h3{font-size:14px;margin:14px 0 6px}
+.ord{padding:10px;border:1px solid #e3e6ea;border-radius:6px;margin-bottom:8px;cursor:pointer}.ord.sel{border:2px solid var(--b);background:#eef5ff}
+.ord .t{display:flex;justify-content:space-between;font-weight:600}.small{font-size:12px;color:#666}
+.prog{height:6px;background:#e8eaee;border-radius:3px;margin-top:6px;overflow:hidden}.prog i{display:block;height:100%;background:var(--ok)}
+.pill{display:inline-block;font-size:11px;padding:2px 7px;border-radius:9px;background:#e8eef7;color:var(--b)}
+.st{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #f0f0f0}
+.dot{width:22px;height:22px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:12px;color:#fff;background:#ccd}
+.st.done .dot{background:var(--ok)}.st.cur .dot{background:var(--warn)}.st .who{font-size:11px;color:#888}
+.st .grow{flex:1}button{background:var(--b);color:#fff;border:0;border-radius:5px;padding:6px 10px;font-weight:600;cursor:pointer;font-size:12px}
+button.sec{background:#6c7a89}button:disabled{background:#bbb;cursor:not-allowed}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:6px;border-bottom:1px solid #eee;text-align:left}th{font-size:11px;color:#666;text-transform:uppercase}
+.paid{color:var(--ok);font-weight:600}.due{color:var(--warn);font-weight:600}.na{color:#aaa}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}.kv{display:grid;grid-template-columns:120px 1fr;gap:3px 8px;font-size:13px}
+.note{background:#fff8e1;border-left:4px solid var(--warn);padding:8px;border-radius:5px;font-size:12px;margin-bottom:10px}
+input[type=text],input[type=number],input[type=date]{padding:5px;border:1px solid #ccc;border-radius:4px;font:inherit;width:120px}
+.bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+@media(max-width:1000px){main{grid-template-columns:1fr}.grid2{grid-template-columns:1fr}}
+</style></head><body>
+<header><div><h1>Fineduct Order Tracker</h1><p>KAJO (US) · GTAP (HK) · Suppliers · Great Luck — prototype, data stored in this browser</p></div>
+<div><label class="small" style="color:#fff">Viewing as </label><select id="role"></select> <select id="clientSel" style="display:none"></select></div></header>
+<main><section><div class="card"><h2>Orders</h2><div class="bar" id="topActions"></div><div id="list"></div></div></section>
+<section id="detail"></section></main>
+<input type="file" id="csvIn" accept=".csv" hidden><input type="file" id="docIn" hidden>
+<script>
+const ROLES={client:"Client",kajo:"KAJO (US)",gtap:"GTAP (HK)",supplier:"Supplier",gl:"Great Luck (Logistics)"};
+const STAGES=[["submitted","Order submitted","client"],["container","Container check","kajo"],["supconf","Supplier confirmation (stock / schedule)","supplier"],["clientpo","Client PO issued to KAJO","client"],["gtappo","GTAP PO to supplier","gtap"],["suppoconf","Supplier PO confirmed","supplier"],["production","Production","supplier"],["docs","Docs ready (CI, packing list, CoO)","supplier"],["shipped","Shipped / departed","gl"],["delivered","Delivered to client","gl"],["check","Client check received","kajo"],["kajopaid","KAJO paid GTAP","kajo"]];
+const DOCS=[["clientpo","Client PO","client"],["gtappo","GTAP PO","gtap"],["ci","Commercial invoice","supplier"],["pl","Packing list","supplier"],["coo","Certificate of Origin","supplier"],["gtapinv","GTAP invoice to KAJO","gtap"]];
+// who can see each doc
+const DOCVIS={client:["clientpo"],kajo:["clientpo","gtappo","ci","pl","coo","gtapinv"],gtap:["clientpo","gtappo","ci","pl","coo","gtapinv"],supplier:["gtappo","ci","pl","coo"],gl:["ci","pl","coo"]};
+// stages visible per role (Great Luck: logistics only; supplier: no client payment)
+const STVIS={client:STAGES.map(s=>s[0]).filter(k=>k!="gtappo"&&k!="suppoconf"&&k!="kajopaid"),kajo:STAGES.map(s=>s[0]),gtap:STAGES.map(s=>s[0]),supplier:["supconf","gtappo","suppoconf","production","docs","shipped"],gl:["docs","shipped","delivered"]};
+// payment milestones: [key,label,from,to,trigger stage]
+const PAYS=[["c2k","Client → KAJO (check)","client","kajo","delivered"],["k2g","KAJO → GTAP (transfer)","kajo","gtap","check"],["g2s","GTAP → Supplier (on departure)","gtap","supplier","shipped"]];
+const PAYVIS={client:["c2k"],kajo:["c2k","k2g","g2s"],gtap:["c2k","k2g","g2s"],supplier:["g2s"],gl:[]};
+const KEY="fineduct_tracker_v1";let S=JSON.parse(localStorage.getItem(KEY)||"null");let role="kajo",sel=null,client=null,pendingDoc=null;
+const today=()=>new Date().toISOString().slice(0,10);const f=(n,d=0)=>(+n||0).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+function demo(){const mk=(id,co,po,lines,cu,gw,cont,done,amt,extra={})=>{const st={};STAGES.slice(0,done).forEach((s,i)=>st[s[0]]={date:"2026-0"+(Math.min(9,6+Math.floor(i/4)))+"-"+String(5+i*2).padStart(2,"0"),by:ROLES[s[2]]});
+return{id,client:co,contact:"buyer@"+co.split(" ")[0].toLowerCase()+".com",po,supplier:"KEJOTO / AMCO6",container:cont,lines,totals:{cu,gw,ctn:lines.reduce((a,l)=>a+l.ctn,0)},stages:st,docs:{},pay:{c2k:{amt:amt,date:"",ref:""},k2g:{amt:+(amt*0.88).toFixed(2),date:"",ref:""},g2s:{amt:+(amt*0.72).toFixed(2),date:"",ref:""},...extra},created:"2026-06-05"}};
+const o=[mk("FD-2026-001","Pacific HVAC Supply","PO-PH-7781",[{code:"FA-80I",no:"52202-11",pkg:300,ctn:300,cu:596.1},{code:"KL-70I",no:"52201-01",pkg:150,ctn:300,cu:397.65}],993.75,1446,"20ft",12,48200),
+mk("FD-2026-002","Sunbelt Mechanical","PO-SB-0412",[{code:"FA-120I",no:"52203-11",pkg:400,ctn:400,cu:1496},{code:"WA-120I",no:"52203-21",pkg:350,ctn:350,cu:691.25}],2187.25,4106,"40ft",9,96500),
+mk("FD-2026-003","Desert Air Distributors","PO-DA-2290",[{code:"KL-100I",no:"522030-01",pkg:500,ctn:500,cu:749},{code:"FA-100I",no:"522030-02",pkg:200,ctn:200,cu:640.2}],1389.2,6240,"40ft",6,61000),
+mk("FD-2026-004","Pacific HVAC Supply","",[{code:"KA-140I",no:"52204-31",pkg:250,ctn:250,cu:359},{code:"CA-140I",no:"52204-41",pkg:200,ctn:200,cu:279.8}],638.8,1810,"20ft",1,0)];
+o[0].pay.c2k={amt:48200,date:"2026-09-28",ref:"Chk #10442"};o[0].pay.k2g={amt:42416,date:"2026-10-02",ref:"Wire KJ-1002"};o[0].pay.g2s={amt:34704,date:"2026-08-20",ref:"TT 88213"};
+o[1].pay.g2s={amt:69480,date:"2026-09-30",ref:"TT 88390"};
+["clientpo","gtappo","ci","pl","coo","gtapinv"].forEach(d=>o[0].docs[d]={name:d.toUpperCase()+"_FD-2026-001.pdf",size:0,data:"data:text/plain,Demo placeholder document",by:"demo",date:"2026-08-10"});
+["clientpo","gtappo"].forEach(d=>o[1].docs[d]={name:d.toUpperCase()+"_FD-2026-002.pdf",size:0,data:"data:text/plain,Demo placeholder",by:"demo",date:"2026-08-01"});
+return{orders:o}}
+if(!S){S=demo();save()}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){alert("Browser storage is full — remove some attached files (prototype stores files in the browser).")}}
+const cur=o=>STAGES.findIndex(s=>!o.stages[s[0]]);
+function visibleOrders(){return S.orders.filter(o=>role!="client"||o.client==client).filter(o=>role!="gl"||o.stages.docs)}
+function init(){const r=document.getElementById("role");r.innerHTML=Object.entries(ROLES).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");r.value=role;r.onchange=()=>{role=r.value;sel=null;draw()};
+document.getElementById("clientSel").onchange=e=>{client=e.target.value;sel=null;draw()};draw();takePending()}
+function draw(){const cs=document.getElementById("clientSel");const clients=[...new Set(S.orders.map(o=>o.client))];if(!client||!clients.includes(client))client=clients[0];
+cs.style.display=role=="client"?"":"none";cs.innerHTML=clients.map(c=>`<option ${c==client?"selected":""}>${c}</option>`).join("");
+const ta=document.getElementById("topActions");ta.innerHTML=(role=="kajo"||role=="client"?`<button onclick="document.getElementById('csvIn').click()">Import order (CSV from order form)</button><button class="sec" onclick="takePending(true)">Pull submitted orders</button>`:"")+(role=="kajo"?`<button class="sec" onclick="resetDemo()">Reset demo data</button>`:"");
+const vo=visibleOrders();if(!sel||!vo.find(o=>o.id==sel))sel=vo[0]&&vo[0].id;
+document.getElementById("list").innerHTML=vo.length?vo.map(o=>{const vis=STVIS[role];const c=cur(o);const st=c<0?"Completed":STAGES[c][1];const dn=vis.filter(k=>o.stages[k]).length;
+return`<div class="ord ${o.id==sel?"sel":""}" onclick="sel='${o.id}';draw()"><div class="t"><span>${o.id}</span><span class="pill">${o.container||"—"}</span></div><div class="small">${o.client}${o.po?" · "+o.po:""}</div><div class="small">Now: <b>${st}</b>${c>=0&&STAGES[c][2]==role?' <span class="due">· your action</span>':""}</div><div class="prog"><i style="width:${dn/vis.length*100}%"></i></div></div>`}).join(""):'<p class="small">No orders visible for this role.</p>';
+detail()}
+function detail(){const el=document.getElementById("detail");const o=S.orders.find(x=>x.id==sel);if(!o){el.innerHTML="";return}const c=cur(o);
+const showMoney=role!="gl";
+let h=`<div class="card"><h2>${o.id} — ${o.client}</h2><div class="kv"><span class="small">Client PO ref</span><span>${o.po||"<i class=na>not yet issued</i>"}</span><span class="small">Contact</span><span>${role=="supplier"||role=="gl"?"<i class=na>hidden</i>":o.contact}</span><span class="small">Supplier</span><span>${o.supplier}</span><span class="small">Container</span><span>${o.container||"—"} · ${f(o.totals.cu,1)} CUFT · ${f(o.totals.gw)} kg G.W. · ${f(o.totals.ctn)} ctns</span></div>
+<h3>Items</h3><table><tr><th>Item no.</th><th>Item</th><th>Packages</th><th>Cartons</th><th>CUFT</th></tr>${o.lines.map(l=>`<tr><td>${l.no||"<span class=na>missing</span>"}</td><td>${l.code}</td><td>${f(l.pkg)}</td><td>${f(l.ctn)}</td><td>${f(l.cu,2)}</td></tr>`).join("")}</table></div>
+<div class="grid2"><div class="card"><h2>Status workflow</h2>${STAGES.filter(s=>STVIS[role].includes(s[0])).map(s=>{const i=STAGES.indexOf(s);const d=o.stages[s[0]];const can=s[2]==role&&i==c;
+return`<div class="st ${d?"done":i==c?"cur":""}"><div class="dot">${d?"✓":i+1}</div><div class="grow">${s[1]}<div class="who">${ROLES[s[2]]}${d?" · "+d.date:""}</div></div>${can?`<button onclick="adv('${s[0]}')">Mark done</button>`:d&&s[2]==role&&i==c-1?`<button class="sec" onclick="undo('${s[0]}')">Undo</button>`:""}</div>`}).join("")}
+${c>=0&&STAGES[c][2]!=role&&STVIS[role].includes(STAGES[c][0])?`<p class="small">Waiting on ${ROLES[STAGES[c][2]]}.</p>`:""}</div>
+<div><div class="card"><h2>Documents</h2><table><tr><th>Document</th><th>File</th><th></th></tr>${DOCS.filter(d=>DOCVIS[role].includes(d[0])).map(d=>{const x=o.docs[d[0]];return`<tr><td>${d[1]}<div class="small">by ${ROLES[d[2]]}</div></td><td>${x?`<a href="#" onclick="dlDoc('${d[0]}');return false">${x.name}</a><div class="small">${x.date}</div>`:'<span class="na">—</span>'}</td><td>${d[2]==role?`<button onclick="pick('${d[0]}')">${x?"Replace":"Attach"}</button>`:""}</td></tr>`}).join("")}</table></div>
+${showMoney&&PAYVIS[role].length?`<div class="card"><h2>Payment milestones</h2><table><tr><th>Milestone</th><th>Amount (USD)</th><th>Status</th><th></th></tr>${PAYS.filter(p=>PAYVIS[role].includes(p[0])).map(p=>{const x=o.pay[p[0]]||{};const due=!!o.stages[p[4]];const canPay=role==p[3]||(role==p[2]&&p[2]!="client");
+return`<tr><td>${p[1]}<div class="small">due when: ${STAGES.find(s=>s[0]==p[4])[1]}</div></td><td>${f(x.amt,2)}</td><td>${x.date?`<span class="paid">Paid ${x.date}</span><div class="small">${x.ref||""}</div>`:due?'<span class="due">Due</span>':'<span class="na">Not yet due</span>'}</td><td>${canPay&&!x.date?`<button onclick="pay('${p[0]}')">Record</button>`:""}</td></tr>`}).join("")}</table><p class="small">GTAP pays the supplier once the shipment departs; KAJO pays GTAP after the client's check clears.</p></div>`:""}</div></div>`;
+el.innerHTML=h}
+function adv(k){const o=S.orders.find(x=>x.id==sel);o.stages[k]={date:today(),by:ROLES[role]};if(k=="clientpo"&&!o.po){const p=prompt("Client PO number:");if(p)o.po=p}save();draw()}
+function undo(k){const o=S.orders.find(x=>x.id==sel);delete o.stages[k];save();draw()}
+function pay(k){const o=S.orders.find(x=>x.id==sel);const x=o.pay[k]||(o.pay[k]={amt:0});const a=prompt("Amount (USD):",x.amt||"");if(a===null)return;const r=prompt("Reference (check # / wire ref):","");x.amt=+a||0;x.ref=r||"";x.date=today();save();draw()}
+function pick(k){pendingDoc=k;document.getElementById("docIn").value="";document.getElementById("docIn").click()}
+document.getElementById("docIn").onchange=e=>{const file=e.target.files[0];if(!file)return;if(file.size>2e6&&!confirm("Large file (>2 MB) may exceed browser storage in this prototype. Continue?"))return;
+const rd=new FileReader();rd.onload=()=>{const o=S.orders.find(x=>x.id==sel);o.docs[pendingDoc]={name:file.name,size:file.size,data:rd.result,by:ROLES[role],date:today()};save();draw()};rd.readAsDataURL(file)};
+function dlDoc(k){const o=S.orders.find(x=>x.id==sel);const d=o.docs[k];const a=document.createElement("a");a.href=d.data;a.download=d.name;a.click()}
+function nextId(){return"FD-2026-"+String(S.orders.length+1).padStart(3,"0")}
+function addOrder(x){const o={id:nextId(),client:x.client||x.company||"New client",contact:x.contact||"",po:x.po||"",supplier:"KEJOTO / AMCO6",container:x.container||"",lines:x.lines,totals:x.totals,stages:{submitted:{date:today(),by:"Client (order form)"}},docs:{},pay:{c2k:{amt:0},k2g:{amt:0},g2s:{amt:0}},created:today(),notes:x.notes||""};S.orders.push(o);save();sel=o.id;client=o.client;draw();return o}
+function parseCSV(t){const rows=[];let r=[],v="",q=false;t=t.replace(/^\ufeff/,"");for(let i=0;i<t.length;i++){const c=t[i];if(q){if(c=='"'&&t[i+1]=='"'){v+='"';i++}else if(c=='"')q=false;else v+=c}else if(c=='"')q=true;else if(c==","){r.push(v);v=""}else if(c=="\n"||c=="\r"){if(c=="\r"&&t[i+1]=="\n")i++;r.push(v);rows.push(r);r=[];v=""}else v+=c}if(v||r.length){r.push(v);rows.push(r)}return rows}
+function fromCSV(t){const R=parseCSV(t);const g=(lab)=>{for(const r of R){const i=r.indexOf(lab);if(i>=0)return r[i+1]||""}return""};const h=R.findIndex(r=>r[0]=="ITEM NO.");if(h<0)throw"Not a Fineduct order export";
+const lines=[];let tot={cu:0,gw:0,ctn:0};for(const r of R.slice(h+1)){if(!r[1]&&r[0]!="TOTAL")continue;if(r[0]=="TOTAL"){tot={cu:+r[13],gw:+r[11],ctn:+r[5]};break}lines.push({no:r[0]=="(missing)"?"":r[0],code:r[1],pkg:+r[6],ctn:+r[5],cu:+r[13]})}
+return{client:g("Company")||g("Client"),contact:g("Contact"),po:g("PO ref"),notes:g("Notes"),lines,totals:tot,container:g("Container")}}
+document.getElementById("csvIn").onchange=e=>{const file=e.target.files[0];if(!file)return;file.text().then(t=>{try{const o=addOrder(fromCSV(t));alert("Imported as "+o.id)}catch(err){alert("Import failed: "+err)}})};
+function takePending(manual){const P=JSON.parse(localStorage.getItem("fineduct_pending_orders")||"[]");if(!P.length){if(manual)alert("No submitted orders waiting. Use 'Submit to tracker' on the order form (same browser), or import its CSV.");return}P.forEach(addOrder);localStorage.removeItem("fineduct_pending_orders");if(manual)alert(P.length+" order(s) imported")}
+function resetDemo(){if(confirm("Reset all tracker data to demo orders?")){S=demo();save();sel=null;draw()}}
+window.__api={addOrder,fromCSV,setRole:r=>{role=r;document.getElementById("role").value=r;sel=null;draw()},select:i=>{sel=i;draw()}};
+init();
+</script></body></html>
